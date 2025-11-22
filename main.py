@@ -1,167 +1,117 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-import pandas as pd
-import csv
 import os
-from typing import Dict, List, Optional
+import pandas as pd
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
-# ========= CONFIG =========
+# -----------------------------
+# FASTAPI SETUP + CORS ENABLED
+# -----------------------------
+app = FastAPI()
 
-DATA_DIR = "data"
-DRIVE_INDEX_CSV = os.path.join(DATA_DIR, "drive_index.csv")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],        # allow all (React, Netlify, Vercel)
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-MAPPING_FILES: List[str] = [
-    os.path.join(DATA_DIR, "mapping_1sem.xlsx"),
-    os.path.join(DATA_DIR, "mapping_3sem.xlsx"),
-    os.path.join(DATA_DIR, "mapping_5sem.xlsx"),
-]
-
-CSV_COL_FILE_NAME = "File Name"
-CSV_COL_FILE_ID = "File ID"
-CSV_COL_PATH = "Path"
-
-
-# ========= IN-MEMORY INDEX =========
-
-college_to_exam: Dict[str, str] = {}
-exam_to_file: Dict[str, Dict[str, str]] = {}
-
-
-# ========= FASTAPI APP =========
-
-app = FastAPI(title="Admit Card Search API")
+# -----------------------------
+# GLOBAL STORAGE
+# -----------------------------
+mapping = {}            # college_roll → exam_roll
+drive_index = {}        # exam_roll → file info
+ROOT_DATA_FOLDER = "data"
 
 
-# ========= MODELS =========
-
-class SearchRequest(BaseModel):
-    roll_no: str
-
-
-class SearchResponse(BaseModel):
-    college_roll: str
-    exam_roll: str
-    file_name: str
-    path: str
-    drive_view_url: str
-    drive_download_url: str
-    note: Optional[str] = None
-
-
-# ========= FUNCTIONS =========
-
-def auto_detect_columns(df, filename):
-    """
-    Detect college roll column + exam roll column based on header keywords.
-    Works with files like:
-    - Roll No.
-    - College Roll Number
-    - Exam Roll No.
-    - Exam Roll Number
-    """
-    cols = list(df.columns)
-    lower_cols = [c.lower() for c in cols]
-
-    # exam roll column: must contain "exam" and "roll"
-    exam_idx = next(
-        (i for i, c in enumerate(lower_cols) if "exam" in c and "roll" in c),
-        None,
-    )
-    if exam_idx is None:
-        raise RuntimeError(
-            f"[ERROR] Could not detect Exam Roll column in file {filename}\n"
-            f"Found columns: {cols}"
-        )
-
-    # college roll: 1) contains "college" + "roll"
-    college_idx = next(
-        (i for i, c in enumerate(lower_cols) if "college" in c and "roll" in c),
-        None,
-    )
-
-    # fallback 2) any "roll" that is not the exam roll
-    if college_idx is None:
-        college_idx = next(
-            (i for i, c in enumerate(lower_cols) if "roll" in c and i != exam_idx),
-            None,
-        )
-
-    if college_idx is None:
-        raise RuntimeError(
-            f"[ERROR] Could not detect College Roll column in file {filename}\n"
-            f"Found columns: {cols}"
-        )
-
-    return cols[college_idx], cols[exam_idx]
-
-
+# -----------------------------------------------------------
+# LOAD ALL EXCEL MAPPINGS (1sem, 3sem, 5sem)
+# -----------------------------------------------------------
 def load_excel_mappings():
-    """Load all mappings: College Roll -> Exam Roll"""
+    global mapping
+    mapping.clear()
 
-    global college_to_exam
-    college_to_exam = {}
+    print("\n==== LOADING EXCEL MAPPINGS ====")
 
-    for path in MAPPING_FILES:
-        if not os.path.exists(path):
-            print(f"[WARN] Mapping file missing, skipping: {path}")
-            continue
+    for filename in os.listdir(ROOT_DATA_FOLDER):
+        if filename.endswith(".xlsx") and filename.startswith("mapping_"):
+            filepath = os.path.join(ROOT_DATA_FOLDER, filename)
 
-        print(f"[INIT] Loading mapping file: {path}")
-        df = pd.read_excel(path, dtype=str, engine="openpyxl")
+            print(f"[INIT] Loading mapping file: {filepath}")
 
-        college_col, exam_col = auto_detect_columns(df, path)
+            df = pd.read_excel(filepath)
 
-        print(
-            f"[INIT] {os.path.basename(path)} → Using College='{college_col}', Exam='{exam_col}'"
-        )
+            # Auto-detect columns
+            detected_college = None
+            detected_exam = None
 
-        for _, row in df.iterrows():
-            college_roll = str(row[college_col]).strip()
-            exam_roll = str(row[exam_col]).strip()
+            for col in df.columns:
+                name = col.strip().lower()
+                if "roll" in name and ("college" in name or "no." in name):
+                    detected_college = col
+                if "exam" in name:
+                    detected_exam = col
 
-            if not college_roll or college_roll.lower() == "nan":
-                continue
-            if not exam_roll or exam_roll.lower() == "nan":
-                continue
+            if not detected_college or not detected_exam:
+                raise RuntimeError(
+                    f"File {filename} is missing required roll/exam columns. Found: {df.columns}"
+                )
 
-            college_to_exam[college_roll] = exam_roll
+            print(
+                f"[INIT] {filename} → Using Columns: "
+                f"College='{detected_college}', Exam='{detected_exam}'"
+            )
 
-    print(f"[DONE] Loaded {len(college_to_exam)} college→exam mappings")
+            for _, row in df.iterrows():
+                college_roll = str(row[detected_college]).strip()
+                exam_roll = str(row[detected_exam]).strip()
+
+                if college_roll not in mapping:
+                    mapping[college_roll] = exam_roll
+
+    print(f"[DONE] Total Mappings Loaded: {len(mapping)}")
 
 
+# -----------------------------------------------------------
+# LOAD DRIVE INDEX (CSV GENERATED BY GOOGLE APP SCRIPT)
+# -----------------------------------------------------------
 def load_drive_index():
-    """Load exam_roll → file info from drive_index.csv"""
+    global drive_index
+    drive_index.clear()
 
-    global exam_to_file
-    exam_to_file = {}
+    print("\n==== LOADING DRIVE INDEX ====")
 
-    if not os.path.exists(DRIVE_INDEX_CSV):
-        raise RuntimeError(f"drive_index.csv missing at {DRIVE_INDEX_CSV}")
+    csv_file = os.path.join(ROOT_DATA_FOLDER, "drive_index.csv")
 
-    print(f"[INIT] Loading drive index: {DRIVE_INDEX_CSV}")
+    if not os.path.exists(csv_file):
+        raise FileNotFoundError("drive_index.csv is missing!")
 
-    with open(DRIVE_INDEX_CSV, encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            file_name = (row.get(CSV_COL_FILE_NAME) or "").strip()
-            file_id = (row.get(CSV_COL_FILE_ID) or "").strip()
-            path = (row.get(CSV_COL_PATH) or "").strip()
+    df = pd.read_csv(csv_file)
 
-            if not file_name or not file_id:
-                continue
+    required_cols = ["File Name", "File ID", "Path"]
+    for col in required_cols:
+        if col not in df.columns:
+            raise RuntimeError(f"drive_index.csv missing required column: {col}")
 
-            exam_roll = file_name.split("_")[0].split(".")[0]
+    for _, row in df.iterrows():
+        file_name = str(row["File Name"])
+        file_id = str(row["File ID"])
+        path = str(row["Path"])
 
-            if exam_roll not in exam_to_file:
-                exam_to_file[exam_roll] = {
-                    "file_name": file_name,
-                    "file_id": file_id,
-                    "path": path,
-                }
+        exam_roll = file_name.split("_")[0]  # Extract exam roll
 
-    print(f"[DONE] Loaded {len(exam_to_file)} exam→file mappings")
+        drive_index[exam_roll] = {
+            "file_name": file_name,
+            "file_id": file_id,
+            "path": path.replace("root/", ""),  # clean path
+        }
+
+    print(f"[DONE] Drive Files Loaded: {len(drive_index)}")
 
 
+# -----------------------------------------------------------
+# BUILD BOTH INDEXES AT STARTUP
+# -----------------------------------------------------------
 def build_indexes():
     print("\n==== BUILDING INDEXES ====")
     load_excel_mappings()
@@ -169,47 +119,58 @@ def build_indexes():
     print("==== INDEX BUILD COMPLETE ====\n")
 
 
-# ========= STARTUP =========
-
 @app.on_event("startup")
 def on_startup():
     build_indexes()
 
 
-# ========= ENDPOINTS =========
-
+# -----------------------------------------------------------
+# HEALTH CHECK ENDPOINT
+# -----------------------------------------------------------
 @app.get("/health")
 def health():
     return {
         "status": "ok",
-        "mapping_count": len(college_to_exam),
-        "file_count": len(exam_to_file),
+        "mapping_count": len(mapping),
+        "file_count": len(drive_index),
     }
 
 
-@app.post("/search", response_model=SearchResponse)
-def search(payload: SearchRequest):
-    roll = payload.roll_no.strip()
+# -----------------------------------------------------------
+# SEARCH ENDPOINT
+# -----------------------------------------------------------
+@app.post("/search")
+async def search(data: dict):
+    roll_no = str(data.get("roll_no", "")).strip()
 
-    if roll not in college_to_exam:
-        raise HTTPException(404, "College Roll Number not found")
+    if roll_no == "":
+        raise HTTPException(status_code=400, detail="Roll number is required")
 
-    exam_roll = college_to_exam[roll]
+    if roll_no not in mapping:
+        raise HTTPException(status_code=404, detail="College Roll Number not found")
 
-    if exam_roll not in exam_to_file:
-        raise HTTPException(404, "PDF not found for this Exam Roll Number")
+    exam_roll = mapping[roll_no]
 
-    file_info = exam_to_file[exam_roll]
+    if exam_roll not in drive_index:
+        return {
+            "college_roll": roll_no,
+            "exam_roll": exam_roll,
+            "file_name": None,
+            "path": None,
+            "drive_view_url": None,
+            "drive_download_url": None,
+            "note": "Exam Roll found but no file uploaded yet."
+        }
 
+    file_info = drive_index[exam_roll]
     file_id = file_info["file_id"]
-    drive_view = f"https://drive.google.com/file/d/{file_id}/view?usp=drivesdk"
-    drive_down = f"https://drive.google.com/uc?export=download&id={file_id}"
 
-    return SearchResponse(
-        college_roll=roll,
-        exam_roll=exam_roll,
-        file_name=file_info["file_name"],
-        path=file_info["path"],
-        drive_view_url=drive_view,
-        drive_download_url=drive_down,
-    )
+    return {
+        "college_roll": roll_no,
+        "exam_roll": exam_roll,
+        "file_name": file_info["file_name"],
+        "path": file_info["path"],
+        "drive_view_url": f"https://drive.google.com/file/d/{file_id}/view?usp=drivesdk",
+        "drive_download_url": f"https://drive.google.com/uc?export=download&id={file_id}",
+        "note": None
+    }
