@@ -31,7 +31,7 @@ class SearchQuery(BaseModel):
 
 
 # =============================
-# LOAD EXCEL MAPPINGS (1 / 3 / 5 sem)
+# LOAD EXCEL MAPPINGS (1 / 3 / 5 / PG)
 # =============================
 def load_excel_mappings():
     global college_to_exam
@@ -40,6 +40,7 @@ def load_excel_mappings():
         "data/mapping_1sem.xlsx",
         "data/mapping_3sem.xlsx",
         "data/mapping_5sem.xlsx",
+        "data/mapping_pg.xlsx",   # ✅ Added PG Mapping
     ]
 
     for file in files:
