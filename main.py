@@ -2,6 +2,8 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+import json
+import os
 
 # =============================
 # FASTAPI APP
@@ -24,6 +26,40 @@ college_to_exam = {}
 exam_to_file = {}
 
 # =============================
+# VISITOR COUNTER
+# =============================
+VISIT_FILE = "visit_count.json"
+STARTING_COUNT = 3000   # ⭐ YOUR STARTING COUNT
+
+def load_visit_count():
+    if not os.path.exists(VISIT_FILE):
+        return STARTING_COUNT
+
+    try:
+        with open(VISIT_FILE, "r") as f:
+            data = json.load(f)
+            return data.get("count", STARTING_COUNT)
+    except:
+        return STARTING_COUNT
+
+def save_visit_count(count):
+    with open(VISIT_FILE, "w") as f:
+        json.dump({"count": count}, f)
+
+visit_count = load_visit_count()
+
+def increment_visit():
+    global visit_count
+    visit_count += 1
+    save_visit_count(visit_count)
+
+# Endpoint for frontend to get count
+@app.get("/visits")
+def get_visits():
+    return {"visits": visit_count}
+
+
+# =============================
 # SEARCH QUERY MODEL
 # =============================
 class SearchQuery(BaseModel):
@@ -31,7 +67,7 @@ class SearchQuery(BaseModel):
 
 
 # =============================
-# LOAD EXCEL MAPPINGS (1 / 3 / 5 / PG)
+# LOAD EXCEL MAPPINGS
 # =============================
 def load_excel_mappings():
     global college_to_exam
@@ -40,38 +76,32 @@ def load_excel_mappings():
         "data/mapping_1sem.xlsx",
         "data/mapping_3sem.xlsx",
         "data/mapping_5sem.xlsx",
-        "data/mapping_pg.xlsx",   # ✅ Added PG Mapping
+        "data/mapping_pg.xlsx",
     ]
 
     for file in files:
         print(f"[INIT] Loading mapping file: {file}")
 
-        # Load as string (prevents scientific notation)
         df = pd.read_excel(file, dtype=str)
-
-        # Clean all values
         df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
         df = df.fillna("")
 
-        # Clean number formatting
         def clean_num(val):
             if not isinstance(val, str):
                 return ""
             val = val.replace(".0", "")
-            if "e+" in val.lower():      # scientific notation
+            if "e+" in val.lower():
                 try:
                     return str(int(float(val)))
                 except:
                     return val
             return val
 
-        # Apply cleaning
         for col in df.columns:
             df[col] = df[col].apply(clean_num)
 
         df.columns = [c.strip() for c in df.columns]
 
-        # Detect column names
         col_college = None
         col_exam = None
 
@@ -87,7 +117,6 @@ def load_excel_mappings():
 
         print(f"[INIT] {file} → Using College='{col_college}', Exam='{col_exam}'")
 
-        # Build mapping dict
         for _, row in df.iterrows():
             college = row[col_college]
             exam = row[col_exam]
@@ -119,7 +148,6 @@ def load_drive_index():
         file_id = str(row["File ID"]).strip()
         path = str(row["Path"]).strip()
 
-        # Extract Exam Roll from filename
         if "_" in file_name:
             exam_roll = file_name.split("_")[0]
         else:
@@ -170,14 +198,14 @@ def build_result(exam_roll, college_roll=None):
 # =============================
 @app.post("/search")
 def search(query: SearchQuery):
+    increment_visit()  # ⭐ INCREMENT EVERY SEARCH
+
     roll = query.roll_no.strip()
 
-    # Try as college roll
     if roll in college_to_exam:
         exam_roll = college_to_exam[roll]
         return build_result(exam_roll, roll)
 
-    # Try as exam roll
     if roll in exam_to_file:
         return build_result(roll)
 
@@ -193,4 +221,5 @@ def health():
         "status": "ok",
         "mapping_count": len(college_to_exam),
         "file_count": len(exam_to_file),
+        "visits": visit_count,
     }
