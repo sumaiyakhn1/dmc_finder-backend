@@ -29,7 +29,7 @@ exam_to_file = {}
 # VISITOR COUNTER
 # =============================
 VISIT_FILE = "visit_count.json"
-STARTING_COUNT = 4208   # ⭐ YOUR STARTING COUNT
+STARTING_COUNT = 4246   # ⭐ YOUR STARTING COUNT
 
 def load_visit_count():
     if not os.path.exists(VISIT_FILE):
