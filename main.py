@@ -83,7 +83,7 @@ def load_excel_mappings():
         print(f"[INIT] Loading mapping file: {file}")
 
         df = pd.read_excel(file, dtype=str)
-        df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
+        df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
         df = df.fillna("")
 
         def clean_num(val):
