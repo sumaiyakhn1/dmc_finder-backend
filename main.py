@@ -115,7 +115,7 @@ def load_excel_mappings():
         if not col_college or not col_exam:
             raise RuntimeError(f"Invalid mapping file: {file}")
 
-        print(f"[INIT] {file} → Using College='{col_college}', Exam='{col_exam}'")
+        print(f"[INIT] {file} -> Using College='{col_college}', Exam='{col_exam}'")
 
         for _, row in df.iterrows():
             college = row[col_college]
@@ -124,7 +124,7 @@ def load_excel_mappings():
             if college.isdigit() and exam.isdigit():
                 college_to_exam[college] = exam
 
-    print(f"[DONE] Loaded {len(college_to_exam)} college→exam mappings")
+    print(f"[DONE] Loaded {len(college_to_exam)} college->exam mappings")
 
 
 # =============================
@@ -160,7 +160,7 @@ def load_drive_index():
                 "Path": path,
             }
 
-    print(f"[DONE] Loaded {len(exam_to_file)} exam→file mappings")
+    print(f"[DONE] Loaded {len(exam_to_file)} exam->file mappings")
 
 
 # =============================
