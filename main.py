@@ -72,12 +72,8 @@ class SearchQuery(BaseModel):
 def load_excel_mappings():
     global college_to_exam
 
-    files = [
-        "data/mapping_1sem.xlsx",
-        "data/mapping_3sem.xlsx",
-        "data/mapping_5sem.xlsx",
-        "data/mapping_pg.xlsx",
-    ]
+    import glob
+    files = glob.glob("data/mapping_*.xlsx")
 
     for file in files:
         print(f"[INIT] Loading mapping file: {file}")
@@ -133,12 +129,20 @@ def load_excel_mappings():
 def load_drive_index():
     global exam_to_file
 
-    print("[INIT] Loading drive index: data/drive_index.csv")
+    import glob
+    files = glob.glob("data/drive_index*.csv")
 
-    df = pd.read_csv("data/drive_index.csv")
-    df.columns = [c.strip() for c in df.columns]
+    for file in files:
+        print(f"[INIT] Loading drive index: {file}")
+        try:
+            df = pd.read_csv(file)
+        except Exception as e:
+            print(f"[ERROR] Failed to load {file}: {e}")
+            continue
 
-    required = ["File Name", "File ID", "Path"]
+        df.columns = [c.strip().strip('"').strip("'") for c in df.columns]
+
+        required = ["File Name", "File ID", "Path"]
     for c in required:
         if c not in df.columns:
             raise RuntimeError("Drive index missing required columns")
@@ -160,7 +164,7 @@ def load_drive_index():
                 "Path": path,
             }
 
-    print(f"[DONE] Loaded {len(exam_to_file)} exam->file mappings")
+    print(f"[DONE] Loaded {len(exam_to_file)} exam->file mappings from {len(files)} files")
 
 
 # =============================
@@ -179,9 +183,8 @@ def on_startup():
 # =============================
 def build_result(exam_roll, college_roll=None):
     file = exam_to_file.get(exam_roll)
-
     if not file:
-        raise HTTPException(status_code=404, detail="Exam Roll not found in drive")
+        return None
 
     return {
         "college_roll": college_roll,
@@ -202,14 +205,38 @@ def search(query: SearchQuery):
 
     roll = query.roll_no.strip()
 
+    # 1. Try via College -> Exam mapping
     if roll in college_to_exam:
         exam_roll = college_to_exam[roll]
-        return build_result(exam_roll, roll)
+        result = build_result(exam_roll, roll)
+        if result:
+            return result
+        # If mapping exists but file not found with exam_roll, 
+        # continue to search with original roll as exam_roll (fallback)
 
-    if roll in exam_to_file:
-        return build_result(roll)
+    # 2. Try direct search (either exam_roll or college_roll as filename)
+    result = build_result(roll)
+    if result:
+        return result
 
     raise HTTPException(status_code=404, detail="Roll Number not found")
+
+
+# =============================
+# RELOAD DATA ENDPOINT
+# =============================
+@app.get("/reload")
+def reload_data():
+    global college_to_exam, exam_to_file
+    college_to_exam = {}
+    exam_to_file = {}
+    load_excel_mappings()
+    load_drive_index()
+    return {
+        "status": "reloaded",
+        "mapping_count": len(college_to_exam),
+        "file_count": len(exam_to_file)
+    }
 
 
 # =============================
